@@ -58,6 +58,6 @@ We executed the following command as suggested in the BEELINE tutorial:
 Afterwards we evaluated the predicted networks with:
 `python BLEvaluator.py --config config-files/config.yaml --epr`
 
-We applied this to all datasets and changed the `config.yaml` files accordingly.
+We applied this to all datasets and changed the `config.yaml` files accordingly (see `config-files` folder).
 
 
