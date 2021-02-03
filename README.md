@@ -50,14 +50,23 @@ Applying the command on all datasets (imputed as well as unimputed data) we can 
 
 ### GRN reconstruction
 We use PIDC, GENIE3 and GRNBoost2 to reconstruct GRNs from imputed and unimputed data.
-Here, we make use of the evaluation framework BEELINE by Pratapa et. al. in order to reconstruct the networks:
+Here, we make use of the evaluation framework [BEELINE](https://github.com/Murali-group/Beeline) by Pratapa et. al. in order to reconstruct the networks:
 
-We executed the following command as suggested in the BEELINE tutorial:
-`python BLRunner.py --config config-files/config.yaml`
+We executed the following command as suggested in the BEELINE tutorial chainging the `config.yaml` files accordingly (see `config-files` folder).
+
+```
+python BLRunner.py --config config-files/config.yaml
+```
+
+We filtered out TF interactions only using `meta-scripts/get_TF_edges.R` by
+
+```
+Rscript --vanilla meta-scripts/get_TF_edges.R <folder/to/rankedEdges/directory>
+```
 
 Afterwards we evaluated the predicted networks with:
 `python BLEvaluator.py --config config-files/config.yaml --epr`
 
-We applied this to all datasets and changed the `config.yaml` files accordingly (see `config-files` folder).
 
+### Evaluation
 
