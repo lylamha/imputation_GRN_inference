@@ -4,13 +4,18 @@ Project to study the effect of imputation methods on GRN reconstruction in singl
 ### Data
 
 We collected processed and normalised single-cell RNA-seq data from [here](https://zenodo.org/record/3701939#.X6UYsHWYW-Y) (Pratapa et. al., Nature Methods, 2020). 
-Here, each data folder consists of three files: ExpressionData.csv (normalised counts), GeneOrdering.csv (genes ordered by their variance and p-value) and Pseudotime.csv (inferred pseudotime for each cell).
+Here, each data folder consists of three files:
+- ExpressionData.csv (normalised counts)
+- GeneOrdering.csv (genes ordered by their variance and respective p-value)
+- Pseudotime.csv (inferred pseudotime for each cell).
 
 ### Imputation
 We use dca (version 0.2.3), knn-smoothing (version 2.1), MAGIC ('Rmagic' R package version 2.0.3) and SAVER (R package version 1.1.2) to impute data on experimental scRNAseq datasets with the following example commands:
 
-dca:
-`dca </path/to/ExpressionData_raw.csv> </path/to/dca_result_folder>` (Please note, that dca only runs on raw count data.)
+dca (Please note, that dca only runs on raw count data.):
+```
+dca </path/to/ExpressionData_raw.csv> </path/to/dca_result_folder>
+```
 
 knn-smoothing:
 ```
