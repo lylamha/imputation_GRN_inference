@@ -1,6 +1,7 @@
 
 library(Rmagic)
 library(Seurat)
+library(reticulate)
 
 # data files
 data_dir <- "."
