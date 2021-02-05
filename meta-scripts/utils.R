@@ -157,6 +157,43 @@ get_tfNet_stats <- function(config_info) {
   
 }
 
+# ===========================================================
+# downsampling data by 60% of sequencing depth
+# ===========================================================
+  
+  
+downsampling_data <- function(data, rate=.6) {
+  
+  down_dat <- apply(data, 2, function(x) {
+    
+    # convert counts into prob
+    p <- x / sum(x)
+    
+    seq_depth <- round(sum(x) * rate, 0)
+    
+    # sampling
+    y <- sample(1:length(x), seq_depth, replace = T, prob = p)
+    y <- table(y)
+    
+    
+    xx <- rep(0, length(x))
+    xx[as.numeric(names(y))] <- y
+    
+    return(xx)
+  })
+  
+  rownames(down_dat) <- rownames(data)
+  colnames(down_dat) <- colnames(data)
+  
+  down_dat <- as.data.frame(down_dat)
+  
+  return(down_dat)
+  
+}
+
+# example:
+# dat <- read.csv("path/to/ExpressionData.csv", row.names=1)
+# down_dat <- downsampling_data(dat)
 
 
 # =====================================================================
