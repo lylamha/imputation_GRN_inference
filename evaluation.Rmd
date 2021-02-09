@@ -1,0 +1,808 @@
+---
+title: "Evaluating imputation methods on GRN reconstruction"
+output: html_notebook
+---
+
+This notebook reproduces the analysis and plotted results of the paper studying the effect of imputation methods on gene regulatory network (GRN) reconstruction in single-cell transcriptome data.
+
+Load libraries
+
+```{r}
+library(reshape2)
+library(ggplot2)
+library(yaml)
+library(igraph)
+library(data.table)
+library(RColorBrewer)
+```
+
+
+```{r setup}
+knitr::opts_knit$set(root.dir = '~/Work/MPI/Projects/remote/Beeline/')
+```
+
+
+Source file for utility functions
+
+```{r}
+source("meta-scripts/utils.R")
+source("meta-scripts/nice_density_plots.R")
+```
+
+
+```{r}
+config_files <- c("config-files/hESC.yaml",
+                  "config-files/hHep.yaml",
+                  "config-files/mESC.yaml",
+                  "config-files/mDC.yaml",
+                  "config-files/mHSC-E.yaml",
+                  "config-files/mHSC-GM.yaml",
+                  "config-files/mHSC-L.yaml")
+
+res_files <- c("outputs/hESC/hESC-EPr_STRING.csv",
+               "outputs/hHep/hHep-EPr_STRING.csv",
+               "outputs/mESC/mESC-EPr_STRING.csv",
+               "outputs/mDC/mDC-EPr_STRING.csv",
+               "outputs/mHSC-E/mHSC-E-EPr_STRING.csv",
+               "outputs/mHSC-GM/mHSC-GM-EPr_STRING.csv",
+               "outputs/mHSC-L/mHSC-L-EPr_STRING.csv")
+
+```
+
+# Performance (EPR) scores
+
+```{r}
+epr <- lapply(seq_along(config_files), function(i) {
+  
+  config_file <- config_files[i]
+  res_file    <- res_files[i]
+  
+  # read config file
+  config      <- read_yaml(config_file)
+  config_info <- parse_config(config)
+  
+  # recreate df without factors
+  config_info <- data.frame(lapply(config_info, as.character),
+                            stringsAsFactors=FALSE)
+  
+  ds <- basename(dirname(res_file)) # dataset
+  db <- gsub(".*_(.*)\\.csv", "\\1", basename(res_file))
+  
+   # read in TF file
+  species <- ifelse(startsWith(config_info$name[1], "h"), "human", "mouse")
+  tfs <- fread(paste0("../Beeline-Networks/", species, "-tfs.csv"))
+  
+  epr_res <- read.csv(res_file, row.names = 1, check.names = F)
+  
+  
+  rnd_pred <- get_tfNet_density(config_info, tfs)
+  rnd_pred <- rnd_pred[rownames(epr_res), colnames(epr_res)]
+  
+  # normalize area under epr by random predictor
+  epr_res <- epr_res / rnd_pred
+  
+  df <- reshape2::melt(as.matrix(epr_res))
+  df$ds <- ds
+  
+  return(df)
+  
+})
+  
+epr <- do.call(rbind, epr)
+epr$Var2 <- gsub(".*_(.*)", "\\1", epr$Var2)
+
+```
+
+EPR scores collected in a data.frame:
+
+```{r}
+epr
+```
+
+```{r}
+## subsetting noimputation
+noimp <- subset(epr, Var2 == "noimputation")
+epr   <- subset(epr, Var2 != "noimputation")
+```
+
+
+Plot EPR results
+
+```{r}
+# absolute EPR scores
+ggplot(data = epr, aes(x=Var2, y=value, col=ds, shape=ds)) +
+  geom_point(size=2) +
+  geom_hline(data = noimp, aes(yintercept = value, col=ds),linetype = "dashed")  +
+  facet_wrap(~Var1, ncol=4) +
+  theme_bw(base_size = 14) +
+  labs(y = "EPR", 
+       x = "imputation methods") +
+  scale_color_manual(name="dataset", values=c("#46b4d3", "#34393c", "#db494b", "#eba432", "#86aa6d", "#ac3d1f", "#207288")) +
+  scale_shape_manual(name="dataset", values=c(0, 1, 2, 3, 4, 8, 5)) +
+  theme(axis.text.x = element_text(angle=45, hjust=1)) +
+  theme(legend.title = element_text(size = 10), 
+        legend.text = element_text(size = 10))
+
+```
+
+Plot EPR log2ratios 
+
+```{r}
+# take log2 ratios between imputed and unimputed epr scores
+epr <- merge(noimp, epr, by = c("ds", "Var1"))
+epr$log2ratio <- log2(epr$value.y / epr$value.x)
+
+```
+
+
+```{r}
+# EPR log2ratios
+ggplot(data = epr, aes(x=Var2.y, y=log2ratio, col=ds, shape=ds)) +
+  geom_point(size=2) +
+  geom_hline(yintercept = 0, color="darkgrey", linetype = "dashed")  +
+  facet_wrap(~Var1, ncol=4) +
+  theme_bw(base_size = 14) +
+  labs(y = "log2ratio (epr_imputed / epr_noimp)", 
+       x = "imputation methods") +
+  scale_color_manual(name="dataset", values=c("#46b4d3", "#34393c", "#db494b", "#eba432", "#86aa6d", "#ac3d1f", "#207288")) +
+  scale_shape_manual(name="dataset", values=c(0, 1, 2, 3, 4, 8, 5)) +
+  theme(axis.text.x = element_text(angle=45, hjust=1)) +
+  theme(legend.title = element_text(size = 10), 
+        legend.text = element_text(size = 10))
+```
+
+### Analysing variability of performance scores
+
+```{r}
+vars_df <- lapply(unique(epr$ds), function(ds) {
+ 
+  # get variance if imputation (Var2.y) is fixed across algorithm
+  res1 <- aggregate(log2ratio ~ Var2.y, epr[epr$ds == ds,], var)
+  colnames(res1) <- c("variable", "variance")
+  res1$class <- "imputation"
+  
+  # get variance if algorithm (Var1) is fixed across imputation
+  res2 <- aggregate(log2ratio ~ Var1, epr[epr$ds == ds,], var)
+  colnames(res2) <- c("variable", "variance")
+  res2$class <- "algorithm"
+  
+  res <- rbind(res1, res2)
+  res$ds <- ds
+  
+  return(res)
+})
+
+vars_df <- do.call(rbind, vars_df)
+```
+
+
+```{r}
+pVal <- wilcox.test(variance ~ class, vars_df, alternative="greater")$p.value
+pVal <- signif(pVal,3)
+```
+
+
+```{r, fig.height=5, fig.width=6}
+ggplot(vars_df, (aes(x=class, y=variance))) +
+  geom_violin(col="grey", fill="lightgrey", alpha=.4) +
+  geom_jitter(aes(shape=ds, col=ds),width = 0.1) +
+  scale_color_manual(name="dataset", values=c("#46b4d3", "#34393c", "#db494b", "#eba432", "#86aa6d", "#ac3d1f", "#207288")) +
+  scale_shape_manual(name="dataset", values=c(0, 1, 2, 3, 4, 8, 5)) +
+  theme_classic(base_size = 14) +
+  xlab("fixed method") +
+  # theme(legend.position = c(0.7, 0.7)) +
+  ggtitle(label="AUEPR log-fold-ratio variances", subtitle = paste0("wilcoxon p-val = ", pVal))
+
+```
+
+
+```{r}
+stats_epr_res <- lapply(seq_along(config_files), function(i) {
+  
+  config_file <- config_files[i]
+  res_file    <- res_files[i]
+  
+  # read config file
+  config      <- read_yaml(config_file)
+  config_info <- parse_config(config)
+  config_info$trueEdges <- "500HVG_TFs-network.csv"
+  
+  
+  ds <- basename(dirname(res_file)) # dataset
+  db <- gsub(".*_(.*)\\.csv", "\\1", basename(res_file))
+  
+  epr_res <- read.csv(res_file, row.names = 1, check.names = F)
+  
+  net_stats <- get_tfNet_stats(config_info)
+  net_stats <- unique(net_stats)
+  
+  ### collect all results in a data.frame
+  res <- reshape2::melt(as.matrix(epr_res))
+  colnames(res) <- c("algorithm", "name", "epr")
+  res <- merge(res, net_stats, by = "name")
+  
+  # normalize area under epr by random predictor
+  res$epr_ratio <- res$epr / res$netDens
+  
+  return(res)
+  
+})
+
+stats_epr_res <- do.call(rbind, stats_epr_res)
+stats_epr_res
+```
+
+# Network similarity
+
+Study network similarity comparing overapping interactions 
+
+```{r}
+library(pheatmap)
+library(mclust)
+
+### function to print the heatmap
+print_heatmap <- function(df_cast, out_dir) {
+  
+  # parse annotation info
+  anno <- data.frame(
+    row.names  = rownames(df_cast),
+    imputation = gsub("(.*)_(.*)", "\\1", rownames(df_cast)),
+    algorithm  = gsub("(.*)_(.*)", "\\2", rownames(df_cast)),
+    stringsAsFactors = T
+  )
+  
+  anno$imputation <- factor(anno$imputation, levels=c("noimputation",
+                                                      "dca",
+                                                      "knnsmooth",
+                                                      "magic",
+                                                      "saver"))
+  
+  algo_col <- brewer.pal(length(levels(anno$algorithm)), "Set3")
+  names(algo_col) <- levels(anno$algorithm)
+  
+  impu_col <- c("#984EA3", "#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00")
+  names(impu_col) <- levels(anno$imputation)
+  
+  # get annotation colors
+  ann_colors <- list(
+    algorithm  = algo_col,
+    imputation = impu_col
+  )
+  
+  # plot heatmap
+  clust <- pheatmap(df_cast,
+                    annotation_row = subset(anno, select="algorithm"),
+                    annotation_col = subset(anno, select="imputation"),
+                    annotation_colors = ann_colors,
+                    show_rownames = F,
+                    show_colnames = F,
+                    fontsize_row = 8,
+                    fontsize_col = 8,
+                    # filename = out_file,
+                    width = 8, 
+                    height= 6
+  )
+  
+  return(clust)
+}
+```
+
+```{r}
+
+### study network similarity across top 500 edges
+res <- lapply(config_files, function(file) {
+  
+  ds <- gsub(".yaml", "", basename(file))
+  
+  config      <- read_yaml(file)
+  config_info <- parse_config(config)
+  config_info$net <- "rankedEdges.csv"
+  
+  config_info <- subset(config_info, algorithm != "PPCOR")
+  
+  # recreate df without factors
+  config_info <- data.frame(lapply(config_info, as.character),
+                            stringsAsFactors=FALSE)
+  
+  # force apply to always return a list
+  topk_elist <- lapply(split(config_info, seq(nrow(config_info))), function(run) {
+    
+    expr_file <- paste0(run["in_dirs"],  "/", run["exprData"])
+    db_file   <- paste0(run["in_dirs"],  "/", run["trueEdges"])
+    net_file  <- paste0(run["out_dirs"], "/", run["net"])
+    
+    net  <- fread(net_file, data.table = F)
+    
+    k <- 500
+    topk <- head(net, n = k)
+    
+    edges <- paste0(topk$Gene1, "_", topk$Gene2)
+
+    return(edges)
+    
+  })
+  
+  names(topk_elist) <- paste0(gsub(".*_(.*)", "\\1", config_info$name),
+                              "_", config_info$algorithm)
+  
+  df <- expand.grid(names(topk_elist), names(topk_elist))
+  
+  
+  # go through combinations and report
+  # number of overlapping edges
+  num_overlap <- apply(df, 1, function(iter) {
+    
+    elist1 <- topk_elist[[as.character(iter["Var1"])]]
+    elist2 <- topk_elist[[as.character(iter["Var2"])]]
+    
+    num <- length(intersect(elist1, elist2)) 
+    
+    return(num)
+  })
+  
+  # jaccard index
+  frac_overlap <- apply(df, 1, function(iter) {
+    
+    elist1 <- topk_elist[[as.character(iter["Var1"])]]
+    elist2 <- topk_elist[[as.character(iter["Var2"])]]
+    
+    frac <- length(intersect(elist1, elist2)) / length(union(elist1, elist2))
+    
+    return(frac)
+  })
+  
+  df$num_overlap  <- num_overlap
+  df$frac_overlap <- frac_overlap
+  
+  df_cast <- reshape2::dcast(df, Var1 ~ Var2, value.var = "frac_overlap")
+  rownames(df_cast) <- df_cast$Var1
+  df_cast$Var1 <- NULL
+  
+  
+  out_dir <- gsub("(outputs/.*?/).*", "\\1", config_info$out_dirs[1])
+  clust   <- print_heatmap(df_cast, out_dir) 
+  
+  # cut tree
+  clusters <- cutree(clust$tree_row, k = 6)
+  
+  # compute ari
+  labels <- clust$tree_row$labels
+  imputation <- gsub("(.*)_(.*)", "\\1", labels)
+  algorithm  <- gsub("(.*)_(.*)", "\\2", labels)
+  ari_imputation <- adjustedRandIndex(clusters, imputation)
+  ari_algorithm  <- adjustedRandIndex(clusters, algorithm)
+  
+  clust_res <- data.frame(
+    dataset = ds,
+    ari_imputation = ari_imputation,
+    ari_algorithm  = ari_algorithm
+  )
+  
+  return(clust_res)
+  
+})
+```
+
+```{r}
+# collect results
+res_df <- do.call(rbind, res)
+res_df <- reshape2::melt(res_df)
+```
+
+```{r, fig.width=5, fig.height=5}
+res_df$dataset <- factor(res_df$dataset)
+### alternative plot for Figure
+ggplot(res_df, aes(x = value, y = factor(dataset, levels=rev(levels(dataset))), col = gsub("ari_", "", variable))) +
+  geom_point(size=3) +
+  theme_bw(base_size = 14) +
+  xlab("ARI")+
+  ylab("") +
+  # theme(legend.position="bottom") +
+  scale_color_discrete(name="annotation by")
+
+```
+
+
+```{r}
+wilcox.test(value ~ variable, data=res_df, paired = T)
+```
+
+
+
+# Gene-gene correlation distribution
+
+
+```{r}
+cor_df <- lapply(config_files, function(file) {
+  
+  ds <- gsub(".yaml", "", basename(file))
+  
+  config      <- read_yaml(file)
+  config_info <- parse_config(config)
+  config_info$net <- "rankedEdges.csv"
+  
+  config_info <- subset(config_info, select=c("name", "exprData", "in_dirs"))
+  config_info <- unique(config_info)
+  
+  cor_df <- apply(config_info, 1, function(run) {
+    
+    
+    expr_file <- paste0(run["in_dirs"], "/", run["exprData"])
+    expr      <- read.csv(expr_file, row.names = 1)
+    
+    cor_mat <- cor(t(expr))
+    cor_df  <- reshape2::melt(cor_mat)
+    cor_df$imputation <- gsub(".*_(.*)", "\\1", run["name"])
+    
+    return(cor_df)
+    
+  })
+  
+  cor_df <- do.call(rbind, cor_df)
+  
+  # correlation data.frame per dataset
+  cor_df$dataset <- ds
+  
+  
+  return(cor_df)
+  
+})
+
+cor_df <- do.call(rbind, cor_df)
+
+cor_df$imputation <- factor(cor_df$imputation, levels=c("noimputation", 
+                                                        "dca", 
+                                                        "knnsmooth",
+                                                        "magic",
+                                                        "saver"))
+
+```
+
+
+```{r}
+ggplot(cor_df, aes(value, y=..density.., col=imputation)) +
+  geom_density(aes(fill = imputation), alpha=.4) +
+  facet_wrap(~dataset, ncol = 4, scales = "free_y") +
+  theme_classic(base_size = 16) +
+  xlab("pearson corrleation") +
+  scale_color_manual(values=c("#984EA3", "#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00")) +
+  scale_fill_manual(values=c("#984EA3", "#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00")) +
+  theme(legend.position = "none")
+```
+
+### Exemplifying changes in gene-gene correlation
+
+Using predicted interactions by dca/GRNBoost2 between ASXL1, SNAPC3, ZNF488
+
+```{r}
+imp  <- "dca"
+
+exp_file    <- "inputs/hESC/hESC_dca/500HVG_TFs-ExpressionData.csv"
+noimp_file  <- "inputs/hESC/hESC_noimputation/500HVG_TFs-ExpressionData.csv"
+
+
+imp_data   <- read.csv(exp_file, row.names = 1)
+noimp_data <- read.csv(noimp_file, row.names = 1)
+```
+
+
+```{r}
+
+#### Plot paired scatterplot to inspect correlations before and after imputation
+
+trio <- c("ASXL1", "SNAPC3", "ZNF488")
+
+noimp_trio <- t(noimp_data[trio,])
+noimp_trio$imputation <- "before"
+
+imp_trio <- t(imp_data[trio,])
+imp_trio$imputation <- "after"
+```
+
+```{r}
+# before imputation
+ggpairs(as.data.frame(t(noimp_data[trio,])),
+        axisLabels = "show", progress=FALSE,
+        lower = list(continuous = GGscatterPlot),
+        diag  = list(continuous = wrap("densityDiag", color="grey40", fill="grey60", alpha=0.3)),
+        upper = list(continuous = wrap("cor", method= "pearson"))) +
+  theme_classic(base_size = 12)
+```
+
+```{r}
+ggpairs(as.data.frame(t(imp_data[trio,])),
+                axisLabels = "show", progress=FALSE,
+                lower = list(continuous = GGscatterPlot),
+                diag  = list(continuous = wrap("densityDiag", color="grey40", fill="grey60", alpha=0.3)),
+                upper = list(continuous = wrap("cor", method= "pearson"))) +
+  theme_classic(base_size = 12)
+```
+
+# Study false positive interactions
+
+### Change of TP ranks after imputation
+
+What happens to the truely predicted interactions (in the unimputed model) after imputation 
+with regard to their corresponding ranks?
+
+```{r}
+# iterate through datasets
+res <- lapply(config_files, function(file) {
+  
+  ds <- gsub(".yaml", "", basename(file))
+  
+  
+  config      <- read_yaml(file)
+  config_info <- parse_config(config)
+  
+  # recreate df without factors
+  config_info <- data.frame(lapply(config_info, as.character),
+                            stringsAsFactors=FALSE)
+  
+  
+  species <- ifelse(startsWith(ds, "h"), "human", "mouse")
+  tfs <- fread(paste0("../Beeline-Networks/", species, "-tfs.csv"))
+  
+  algos <- unique(config_info$algorithm)
+  algos <- algos[c(1,2,3)]
+  
+  # iterate trough algorithms
+  TP_res_dataset <- lapply(algos, function(cur_algo) {
+    
+    algo_config <- subset(config_info, algorithm == cur_algo)
+    
+    noimp_idx <- grep("noimputation", algo_config$name)
+    noimp <- algo_config[noimp_idx,]
+    algo_config <- algo_config[-noimp_idx,]
+    
+    noimp_net <- fread(paste0(noimp["out_dirs"], "/rankedEdges.csv"))
+    noimp_net <- get_TFEdges(noimp_net, tfs)
+    noimp_net <- get_ranked_edges(noimp_net)
+    noimp_db  <- fread(paste0(noimp["in_dirs"], "/", noimp["trueEdges"]))
+    
+    noimp_topk <- subset(noimp_net, EdgeRank <= nrow(noimp_db))
+    noimp_topk <- find_trueEdges(noimp_topk, noimp_db)
+  
+    
+    # iterate through imputation
+    TP_res <- apply(algo_config, 1, function(run) {
+      
+      imp <- gsub(".*_(.*)", "\\1", run["name"])
+      net_file <- paste0(run["out_dirs"], "/rankedEdges.csv")
+      
+      # read data
+      imp_net <- fread(net_file)
+      imp_net <- get_TFEdges(imp_net, tfs)
+      imp_net <- get_ranked_edges(imp_net)
+      imp_db  <- fread(paste0(run["in_dirs"], "/", run["trueEdges"]))
+      
+      
+      # get true positive edges in noimput predicted network
+      idx <- which(noimp_topk$TrueEdge == 1)
+      noimp_TPedges <- paste(noimp_topk$Gene1[idx], noimp_topk$Gene2[idx], sep = "|")
+      
+      imp_edges <- paste(imp_net$Gene1, imp_net$Gene2, sep="|")
+      imp_net$noimp_TPedges <- 0
+      imp_net$noimp_TPedges[which(imp_edges %in% noimp_TPedges)] <- 1
+      
+      # comparing the results of true positives (without imputation)
+      # before and after
+      TP_res <- merge(
+        subset(noimp_topk, TrueEdge == 1),
+        subset(imp_net, noimp_TPedges == 1),
+        by = c("Gene1", "Gene2"), suffixes = c("_noimp", "_imp"))
+      
+      TP_res <- subset(TP_res, select = c("Gene1", "Gene2", "EdgeRank_imp"))
+      
+      
+      TP_res <- reshape2::melt(TP_res,
+                     id.vars = c("Gene1", "Gene2"),
+                     measure.vars = "EdgeRank_imp" )
+      
+      TP_res$variable <- imp
+      
+      return(TP_res)
+      
+    })  
+    
+    TP_res <- do.call(rbind, TP_res)
+    
+    noimp_TP_res <- reshape2::melt(subset(noimp_topk, subset = TrueEdge == 1, select=c("Gene1", "Gene2", "EdgeRank")),
+                         id.vars = c("Gene1", "Gene2"))
+    noimp_TP_res$variable <- "no_imputation"
+    
+    TP_res <- rbind(TP_res, noimp_TP_res)
+    TP_res$variable <- factor(TP_res$variable, levels=c("no_imputation", "dca", "knnsmooth", "magic", "saver"))
+    
+    TP_res$algorithm <- cur_algo
+    
+    return(TP_res)
+  })
+  
+  
+  TP_res_dataset <- do.call(rbind, TP_res_dataset)
+  TP_res_dataset$algorithm <- factor(TP_res_dataset$algorithm, levels=c("PIDC", "GENIE3", "GRNBOOST2"))
+  
+  #### plot
+  
+  rank_lim <- max(subset(TP_res_dataset, variable == "no_imputation")$value)
+  p <- ggplot(TP_res_dataset, aes(variable, value)) +
+    geom_violin(aes(fill = variable), alpha=.7) +
+    geom_boxplot(width=.1) +
+    facet_wrap(~algorithm) +
+    theme_bw(base_size = 16 ) +
+    scale_y_log10() +
+    geom_hline(yintercept = rank_lim, linetype="dashed") +
+    xlab("Methods") +
+    ylab("Edge ranks") +
+    scale_fill_manual(values=c("#984EA3", "#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00"))+
+    ggtitle(ds) +
+    theme(axis.text.x = element_text(angle=45, hjust=1)) +
+    theme(legend.position = "none")
+  print(p)
+  
+  ### Calculate p-values between no_imputation and all other methods
+  test_grid <- expand.grid(levels(TP_res_dataset$variable),
+                           levels(TP_res_dataset$algorithm),
+                           stringsAsFactors = F)
+  test_grid <- subset(test_grid, Var1 != "no_imputation")
+  colnames(test_grid) <-  c("imputation", "algorithm")
+  
+  
+  pVal <- apply(test_grid, 1, function(run) {
+    alg <- as.character(run["algorithm"])
+    imp <- as.character(run["imputation"])
+    sub_data <- subset(TP_res_dataset, algorithm == alg &
+                       variable %in% c(imp, "no_imputation"))
+    res <- wilcox.test(value ~ variable, sub_data,
+                       alternative = "less")
+    return(res$p.value)
+  })
+  
+  res <- cbind(test_grid, pVal)
+  res$data <- ds
+  
+  return(res)
+  
+})
+
+
+res <- do.call(rbind, res)
+res$qVal <- p.adjust(res$pVal, method = "bonferroni")
+res$qVal <- signif(res$qVal, digits = 4)
+
+
+dres <- reshape2::dcast(res, data + imputation ~ algorithm , value.var = "qVal")
+
+```
+
+
+```{r}
+dres
+```
+
+### Overall gene-gene correlation values before and after imputation
+
+Scatter plot of absolute gene-gene correlations
+
+```{r}
+
+
+# iterate through datasets
+for (file in config_files) {
+  
+  ds <- gsub(".yaml", "", basename(file))
+  
+  
+  config      <- read_yaml(file)
+  config_info <- parse_config(config)
+  
+  noimp_exprFile <- paste0("../Beeline-data/inputs/scRNA-Seq/", ds,
+                           "/ExpressionData.csv")
+  noimp_expr <- read.csv(noimp_exprFile, row.names = 1)
+  
+  species <- ifelse(startsWith(ds, "h"), "human", "mouse")
+  tfs <- fread(paste0("../Beeline-Networks/", species, "-tfs.csv"))
+  
+  config_info <- config_info[grep("noimputation", config_info$name, invert=T),]
+  
+  cor_df <- apply(config_info, 1, function(run) {
+    
+    imp  <- gsub(".*_(.*)", "\\1", run["name"])
+    alg  <- run["algorithm"]
+    name <- run["name"]
+    
+    net_file <- paste0(run["out_dirs"], "/rankedEdges.csv")
+    
+    # read data
+    imp_net <- fread(net_file)
+    imp_net <- get_TFEdges(imp_net, tfs)
+    imp_net <- get_ranked_edges(imp_net)
+    imp_db  <- fread(paste0(run["in_dirs"], "/", run["trueEdges"]))
+    
+    
+    imp_topk <- subset(imp_net, EdgeRank <= nrow(imp_db))
+    imp_topk <- find_trueEdges(imp_topk, imp_db)
+    
+    
+    # use find_trueEdges() the other way round to get false negatives
+    imp_db <- find_trueEdges(net=imp_db, db=imp_topk)
+    
+    expr_file <- paste0(run["in_dirs"], "/", run["exprData"])
+    expr_imp  <- read.csv(expr_file, row.names = 1)
+    
+    # false positives and true positives
+    cor_values <- apply(imp_topk, 1, function(gpair) {
+      
+      gene1 <- as.character(gpair[1])
+      gene2 <- as.character(gpair[2])
+      
+      bef <- cor(as.numeric(noimp_expr[gene1,]), as.numeric(noimp_expr[gene2,]))
+      aft <- cor(as.numeric(expr_imp[gene1,]),   as.numeric(expr_imp[gene2,]))
+      
+      return(c(cor_before = bef, cor_after = aft))
+      
+    })
+    
+    cor_values <- as.data.frame(t(cor_values))
+    
+    imp_topk <- cbind(imp_topk, cor_values)
+    
+    imp_topk <- subset(imp_topk, select = c("Gene1", "Gene2", "TrueEdge", "cor_before", "cor_after"))
+    imp_topk$TrueEdge <- ifelse(imp_topk$TrueEdge, "true_pos", "false_pos")
+    
+    
+    # false negatives
+    imp_db <- subset(imp_db, TrueEdge == 0)
+    cor_values <- apply(imp_db, 1, function(gpair) {
+      
+      gene1 <- as.character(gpair[1])
+      gene2 <- as.character(gpair[2])
+      
+      bef <- cor(as.numeric(noimp_expr[gene1,]), as.numeric(noimp_expr[gene2,]))
+      aft <- cor(as.numeric(expr_imp[gene1,]),   as.numeric(expr_imp[gene2,]))
+      
+      return(c(cor_before = bef, cor_after = aft))
+      
+    })
+    
+    cor_values <- as.data.frame(t(cor_values))
+    
+    imp_db <- cbind(imp_db, cor_values)
+    
+    imp_db <- subset(imp_db, select = c("Gene1", "Gene2", "TrueEdge", "cor_before", "cor_after"))
+    imp_db$TrueEdge <- ifelse(imp_db$TrueEdge, "true_pos", "false_neg")
+    
+    
+    cor_df <- rbind(imp_topk, imp_db)
+    cor_df$imputation <- imp
+    cor_df$algorithm  <- alg
+    
+    return(cor_df)
+    
+  })
+  
+  cor_df <- do.call(rbind, cor_df)
+  
+  cor_df$algorithm <- factor(cor_df$algorithm, levels = c("PIDC", "GENIE3", "GRNBOOST2"))
+
+  p <- ggplot(subset(cor_df, TrueEdge != "true_pos"), aes(abs(cor_before), abs(cor_after))) + 
+    geom_point(aes(col=TrueEdge), alpha=.2, shape=20, size=1) +
+    geom_point(aes(col=TrueEdge), data = subset(cor_df, TrueEdge == "true_pos"), shape=4) +
+    geom_smooth(aes(col=TrueEdge), method='lm', se=FALSE) +
+    geom_smooth(aes(col=TrueEdge), data = subset(cor_df, TrueEdge == "true_pos"),
+                method='lm', se=FALSE) +
+    facet_grid(imputation~algorithm) +
+    xlim(c(0,1)) +
+    ylim(c(0,1)) +
+    xlab("abs. correlation before imputation") +
+    ylab("abs. correlation after imputation") +
+    scale_color_manual(name="Class", values=c("#00AFBB", "#E7B800", "#D43017")) +
+    scale_alpha_manual(values=c(0.3, 0.3, 1)) +
+    theme_classic(base_size = 16) +
+    theme(legend.position="bottom") +
+    ggtitle(ds)
+  print(p)
+ 
+}
+```
