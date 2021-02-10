@@ -1,0 +1,361 @@
+---
+title: "Network motif search"
+output: html_notebook
+---
+
+This is a notebook reporting the results with respect to the network motif search analysis.
+
+
+```{r}
+library(data.table)
+library(yaml)
+library(ggplot2)
+library(reshape2)
+library(viridis)
+library(dplyr)
+library(gridExtra)
+```
+
+
+
+```{r setup, echo=FALSE}
+knitr::opts_knit$set(root.dir = '~/Work/MPI/Projects/remote/Beeline/')
+```
+
+
+```{r}
+source("meta-scripts/utils.R")
+
+config_files <- c("config-files/hESC.yaml",
+                  "config-files/hHep.yaml",
+                  "config-files/mESC.yaml",
+                  "config-files/mDC.yaml",
+                  "config-files/mHSC-E.yaml",
+                  "config-files/mHSC-GM.yaml",
+                  "config-files/mHSC-L.yaml")
+
+```
+
+
+```{r}
+### searches for feed forward
+### x --> y --> z => x --> z ? 
+search_trans_ff <- function(df) {
+  
+  # get the triplet interactions reported in the network:
+  # x --> y & y --> z
+  trip_net <- merge(df, df,
+                    by.x="Gene2",
+                    by.y="Gene1",
+                    suffixes = c("_xy", "_yz"), 
+                    allow.cartesian = T)
+  
+  setnames(trip_net,
+           old = c("Gene2", "Gene1", "Gene2_yz"),
+           new = c("y", "x", "z"))
+  
+  
+  # filter for distinct genes only
+  dups <- apply(subset(trip_net, select=c("x", "y", "z")), 1,
+                function(i) { sum(duplicated(i))
+                })
+  trip_net <- trip_net[dups == 0]
+  
+  
+  trip_net <- merge(trip_net, df, by.x = c("x", "z"), by.y = c("Gene1", "Gene2"),
+                    suffixes = c("", "_xz"))
+  
+  if (any(grepl("EdgeWeight", colnames(trip_net)))) {
+    
+    setnames(trip_net,
+             old = c("EdgeWeight",    "EdgeRank",    "TrueEdge"),
+             new = c("EdgeWeight_xz", "EdgeRank_xz", "TrueEdge_xz"))
+    
+    trip_net <- trip_net[, c("x", "y", "z",
+                             "EdgeWeight_xy", "EdgeRank_xy", "TrueEdge_xy",
+                             "EdgeWeight_yz", "EdgeRank_yz", "TrueEdge_yz",
+                             "EdgeWeight_xz", "EdgeRank_xz", "TrueEdge_xz")]
+  } else {
+    
+    trip_net <- trip_net[, c("x", "y", "z")]
+  
+  }
+
+  
+  return(trip_net)
+  
+  
+}
+
+
+```
+
+```{r}
+
+### searches for chains:
+### x --> y --> z but not x --> z ?
+search_trans_chain <- function(df) {
+  
+  # get the triplet interactions reported in the network:
+  # x --> y & y --> z
+  trip_net <- merge(df, df,
+                    by.x="Gene2",
+                    by.y="Gene1",
+                    suffixes = c("_xy", "_yz"), 
+                    allow.cartesian = T)
+  
+  setnames(trip_net,
+           old = c("Gene2", "Gene1", "Gene2_yz"),
+           new = c("y", "x", "z"))
+  
+  
+  # filter for distinct genes only
+  dups <- apply(subset(trip_net, select=c("x", "y", "z")), 1,
+                function(i) { sum(duplicated(i))
+                })
+  trip_net <- trip_net[dups == 0]
+  
+  # exclude interactions where x --> z
+  trip_net <- anti_join(trip_net, df, by = c("x" = "Gene1", "z" = "Gene2"))
+  
+  
+  if (any(grepl("EdgeWeight", colnames(trip_net)))) {
+    
+    trip_net <- trip_net[, c("x", "y", "z",
+                             "EdgeWeight_xy", "EdgeRank_xy", "TrueEdge_xy",
+                             "EdgeWeight_yz", "EdgeRank_yz", "TrueEdge_yz")]
+  } else {
+    trip_net <- trip_net[, c("x", "y", "z")]
+  }
+  
+  return(trip_net)
+  
+}
+
+```
+
+```{r}
+
+### get unique trios 
+### collects only the genes with transitive correlations and
+### discards the information about x, y, and z
+uniqueTrios <- function(df) {
+  
+  sorted_trio <- apply(df, 1, function(trio) { sort(trio[1:3]) })
+  sorted_trio <- as.data.frame(t(sorted_trio))
+  sorted_trio <- aggregate(list(num_Occ=rep(1, nrow(sorted_trio))), sorted_trio, length)
+  
+  return(sorted_trio)
+}
+```
+
+
+# Analysis
+
+```{r fig.width=5, fig.height=8}
+
+
+# ============================================================
+# Look at transitive interactions
+# - transitive chain
+# - feed-forward loop
+# ============================================================
+
+res <- lapply(config_files, function(file) {
+  
+  ds <- gsub(".yaml", "", basename(file))
+  
+  
+  config      <- read_yaml(file)
+  config_info <- parse_config(config)
+  
+  species <- ifelse(startsWith(ds, "h"), "human", "mouse")
+  tfs <- fread(paste0("../Beeline-Networks/", species, "-tfs.csv"))
+  
+  
+  motif_stats <- apply(config_info, 1, function(run) {
+    
+    imp  <- gsub(".*_(.*)", "\\1", run["name"])
+    alg  <- run["algorithm"]
+    name <- run["name"]
+    
+    
+    net_file <- paste0(run["out_dirs"], "/rankedEdges.csv")
+    
+    
+    # read data
+    imp_net <- fread(net_file)
+    imp_net <- get_TFEdges(imp_net, tfs)
+    imp_net <- get_ranked_edges(imp_net)
+    imp_db  <- fread(paste0(run["in_dirs"], "/", run["trueEdges"]))
+    
+    
+    # get topk edges
+    imp_topk <- subset(imp_net, EdgeRank <= nrow(imp_db))
+    imp_topk <- find_trueEdges(imp_topk, imp_db)
+    
+    
+    # ==== NETWORK MOTIF ANALYSIS ==== #
+    
+    
+    ### feed-forward loop 
+    
+    # genes with transitive correlations (feed-forward)
+    ff_imp <- search_trans_ff(imp_topk)
+    
+    num_ffs <- nrow(uniqueTrios(ff_imp))
+    
+    
+    # report number of TP feed forward loops
+    TP_ff <- ff_imp[rowSums(ff_imp[,grep("TrueEdge", colnames(ff_imp)), with=F]) == 3,]
+    num_TP_ffs <- nrow(uniqueTrios(TP_ff))
+    
+    # report number of FP feed forward loops
+    FP_ff <- ff_imp[rowSums(ff_imp[,grep("TrueEdge", colnames(ff_imp)), with=F]) < 3,]
+    num_FP_ffs <- nrow(uniqueTrios(FP_ff))
+    
+    # get number of FN feed forward loops
+    
+    ff_db <- search_trans_ff(imp_db)
+    num_FN_ffs <- nrow(uniqueTrios(anti_join(ff_db, ff_imp, by=c("x", "y", "z"))))
+    
+    
+    
+    
+    ### transitive chain
+    
+    # get true transitive edges (network motif: chain)
+    chains_db <- search_trans_chain(imp_db)
+    num_T_chains <- nrow(uniqueTrios(chains_db))
+    
+    # get imputed transitive chains
+    chains_imp <- search_trans_chain(imp_topk)
+    
+    # intersection (TP transitive chains)
+    TP_chains <- merge(chains_imp, chains_db, by=c("x", "y", "z"))
+    
+    # report number of unique chains
+    num_TP_chains <- nrow(uniqueTrios(TP_chains))
+    
+    # ff's with a misleading transitive edge x --> z although it should not exist
+    FN_chains <- merge(ff_imp, chains_db, by=c("x", "y", "z"))
+    
+    # report number of FN chains containing a feed forward loop
+    num_FN_chains <- nrow(uniqueTrios(FN_chains))
+    
+    # chain but it is a ff
+    FP_chains <- merge(chains_imp, ff_db, by=c("x", "y", "z"))
+    num_FP_chains <- nrow(uniqueTrios(FP_chains))
+    
+    
+    
+    res <- data.frame(
+      imputation = imp,
+      algorithm  = alg,
+      num_ffs = num_ffs,
+      num_FP_ffs = num_FP_ffs,
+      num_TP_ffs = num_TP_ffs,
+      num_FN_ffs = num_FN_ffs,
+      TPR_ffs = num_TP_ffs / (num_TP_ffs + num_FN_ffs),
+      FDR_ffs = num_FP_ffs / (num_TP_ffs + num_FP_ffs),
+      num_T_chains  = num_T_chains,
+      num_TP_chains = num_TP_chains,
+      num_FP_chains = num_FP_chains,
+      num_FN_chains = num_FN_chains,
+      TPR_chains = num_TP_chains / (num_TP_chains + num_FN_chains),
+      FDR_chains = num_FP_chains / (num_TP_chains + num_FP_chains)
+    )
+    
+    
+    return(res)
+    
+  })
+ 
+
+  motif_stats_df <- do.call(rbind, motif_stats)
+  motif_stats_df$algorithm <- factor(motif_stats_df$algorithm, levels = c("PIDC", "GENIE3", "GRNBOOST2"))
+  motif_stats_noimp <- subset(motif_stats_df, imputation == "noimputation")
+  
+  motif_stats_df <- subset(motif_stats_df, imputation != "noimputation")
+  
+
+  
+  p3 <- ggplot(motif_stats_df, aes(x = imputation, y = num_TP_chains, fill=imputation)) +
+    geom_bar(stat="identity", width = 0.5) +
+    geom_hline(data = motif_stats_noimp, aes(yintercept = num_TP_chains), linetype = "dashed")  +
+    facet_grid(~algorithm) +
+    scale_fill_manual(values=c("#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00")) +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "none")+
+    ylab("TP counts")+
+    xlab("") +
+    theme(axis.text.x = element_text(angle=45, hjust=1)) 
+  
+  p4 <- ggplot(motif_stats_df, aes(x = imputation, y = num_FP_chains, fill=imputation)) +
+    geom_bar(stat="identity", width =  0.5) +
+    geom_hline(data = motif_stats_noimp, aes(yintercept = num_FP_chains), linetype = "dashed")  +
+    facet_grid(~algorithm) +
+    scale_fill_manual(values=c("#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00")) +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "none")+
+    ylab("FP counts") +
+    xlab("") +
+    theme(axis.text.x = element_text(angle=45, hjust=1)) 
+  
+  p5 <- ggplot(motif_stats_df, aes(x = imputation, y = num_FN_chains, fill=imputation)) +
+    geom_bar(stat="identity", width = 0.5) +
+    geom_hline(data = motif_stats_noimp, aes(yintercept = num_FN_chains), linetype = "dashed")  +
+    facet_grid(~algorithm) +
+    scale_fill_manual(values=c("#E41A1C", "#377EB8", "#4DAF4A", "#FF7F00")) +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "none")+
+    ylab("FN counts")+
+    xlab("") +
+    theme(axis.text.x = element_text(angle=45, hjust=1)) 
+  
+  grid.arrange(p3, p4, p5, nrow=3, ncol=1, top=ds)
+  
+  
+  motif_stats_df <- rbind(motif_stats_noimp, motif_stats_df)
+  motif_stats_df$data <- ds
+  
+  return(motif_stats_df)
+  
+})
+  
+res <- do.call(rbind, res)
+
+
+res$algorithm <- factor(res$algorithm, levels=c("PIDC", "GENIE3", "GRNBOOST2"))
+res$imputation <- factor(res$imputation, levels=c("noimputation", "dca", "knnsmooth", "magic", "saver"))
+```
+
+```{r}
+res
+```
+
+Prepare for plotting
+
+```{r}
+tmp <- melt(subset(res, select = c( "data", "algorithm", "imputation","TPR_chains", "FDR_chains")))
+tmp$name <- paste(tmp$algorithm, tmp$imputation, sep = "_")
+tmp <- tmp[order(tmp$algorithm),]
+
+tmp$variable <- factor(gsub("_chains", "", tmp$variable), levels = c("TPR", "FDR"))
+tmp$name <- factor(tmp$name, levels=c("PIDC_noimputation", "PIDC_dca", "PIDC_knnsmooth", "PIDC_magic", "PIDC_saver",
+                                      "GENIE3_noimputation", "GENIE3_dca", "GENIE3_knnsmooth", "GENIE3_magic", "GENIE3_saver",
+                                      "GRNBOOST2_noimputation", "GRNBOOST2_dca", "GRNBOOST2_knnsmooth", "GRNBOOST2_magic", "GRNBOOST2_saver"))
+
+ggplot(tmp, aes(variable, factor(name, levels = rev(levels(name))))) +
+  geom_tile(aes(fill=value), col = "white", size=1) +
+  facet_wrap(~data, nrow = 1) +
+  scale_fill_viridis(limits=c(0,1)) +
+  coord_equal() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1)) +
+  geom_text(aes(label = round(value, 2)), size = 2) +
+  xlab("") +
+  ylab("")
+```
+
+
