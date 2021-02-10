@@ -70,3 +70,4 @@ Afterwards we evaluated the predicted networks with:
 
 ### Evaluation
 
+Evaluation consists of the two R notebooks `evaluation.Rmd` and `motif_search.Rmd` generating all relevant plots with regard to the evaluation pipeline. 
