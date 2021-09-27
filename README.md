@@ -49,12 +49,14 @@ Applying the command on all datasets (imputed as well as unimputed data) we can 
 
 ### Config files
 In each .yaml config file we configured the respective datasets in the following way:
+
+```
 datasets: corresponds to the respective subfolder named by the dataset and the imputation method being used
  - name: The respective subfolders name 
    exprDat: contains the expression data matrix in the respective subfolder
    cellData: contains pseudoTime information
    trueEdges: contains the evaluation network (either STRING or cell-type specific ChIP-seq derived network)
-
+```
 Hence, the folder structure of the input dataset for e.g. hESC - dca imputed data is the following:
 inputs > hESC > hESC_dca
 The respective exprDat, cellData and trueEdges files are then stored in the subfolder hESC_dca  
