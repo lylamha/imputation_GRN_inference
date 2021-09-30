@@ -195,6 +195,21 @@ ggplot(vars_df, (aes(x=class, y=variance))) +
 
 ```
 
+### ANOVA
+
+```{r}
+# modify column names
+setnames(epr, c("Var1", "Var2.y"), c("GRN", "imputation"))
+ds_names <- gsub(".yaml", "", basename(config_files))
+```
+
+```{r}
+lapply(ds_names, function(dat) {
+  fit.lm <- lm(log2ratio~GRN + imputation, data=subset(epr, ds==dat))
+  summary.aov(fit.lm)
+})
+```
+
 
 ```{r}
 stats_epr_res <- lapply(seq_along(config_files), function(i) {
